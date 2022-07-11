@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,18 +13,29 @@ import (
 	"github.com/optix2000/go-nsdctl"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	log "github.com/sirupsen/logrus"
 )
 
-// Args
-var listenAddr = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
-var metricPath = flag.String("metric-path", "/metrics", "The path to export Prometheus metrics to.")
-var metricConfigPath = flag.String("metric-config", "", "Mapping file for metrics. Defaults to built in file for NSD 4.1.x. This allows you to add or change any metrics that this scrapes")
-var nsdConfig = flag.String("config-file", "/etc/nsd/nsd.conf", "Configuration file for nsd/unbound to autodetect configuration from. Defaults to /etc/nsd/nsd.conf. Mutually exclusive with -nsd-address, -cert, -key and -ca")
-var nsdType = flag.String("type", "nsd", "What nsd-like daemon to scrape (nsd or unbound). Defaults to nsd")
-var cert = flag.String("cert", "", "Client cert file location. Mutually exclusive with -config-file.")
-var key = flag.String("key", "", "Client key file location. Mutually exclusive with -config-file.")
-var ca = flag.String("ca", "", "Server CA file location. Mutually exclusive with -config-file.")
-var nsdAddr = flag.String("nsd-address", "", "NSD or Unbound control socket address.")
+var (
+	// Flags
+	logLevel      = flag.String("log.level", "info", "Set log verbosity (log level)")
+
+	portNumber    = flag.String("port", "9167", "The port number to listen on for HTTP requests.")
+	address       = flag.String("address", "0.0.0.0", "The address to listen on for HTTP requests.")
+
+	metricPath = flag.String("web.telemetry-path", "/metrics", "The path to export Prometheus metrics to.")
+	metricConfigPath = flag.String("metric-config", "", "Mapping file for metrics. Defaults to built in file for NSD 4.1.x. This allows you to add or change any metrics that this scrapes")
+
+	nsdConfig = flag.String("config-file", "/etc/nsd/nsd.conf", "Configuration file for nsd/unbound to autodetect configuration from. Defaults to /etc/nsd/nsd.conf. Mutually exclusive with -nsd-address, -cert, -key and -ca")
+	nsdType = flag.String("type", "nsd", "What nsd-like daemon to scrape (nsd or unbound). Defaults to nsd")
+
+	cert = flag.String("cert", "/etc/nsd/nsd_control.pem", "Client cert file location. Mutually exclusive with -config-file.")
+	key = flag.String("key", "/etc/nsd/nsd_control.key", "Client key file location. Mutually exclusive with -config-file.")
+	ca = flag.String("ca", "/etc/nsd/nsd_server.pem", "Server CA file location. Mutually exclusive with -config-file.")
+	skipVerify = flag.Bool("skip_verify", false, "Skip verification of NSD server certificate. This is unsafe.")
+
+	nsdAddr = flag.String("nsd-address", "localhost:8952", "NSD or Unbound control socket address.")
+)
 
 // Prom stuff
 var nsdToProm = strings.NewReplacer(".", "_")
@@ -217,10 +227,24 @@ func NewNSDCollectorFromConfig(path string) (*NSDCollector, error) {
 	return collector, err
 }
 
-// Main
+func loglevel(opt string) {
+	switch opt {
+	case "error":
+		log.SetLevel(log.ErrorLevel)
+	case "warn":
+		log.SetLevel(log.WarnLevel)
+	case "info":
+		log.SetLevel(log.InfoLevel)
+	case "debug":
+		log.SetLevel(log.DebugLevel)
+	default:
+		log.Warnln("Unrecognized log level, will default to `info` log level")
+	}
+}
 
 func main() {
 	flag.Parse()
+	loglevel(*logLevel)
 
 	// Load config
 	err := loadConfig(*metricConfigPath, metricConfiguration)
@@ -233,7 +257,7 @@ func main() {
 	if *cert != "" || *key != "" || *ca != "" || *nsdAddr != "" {
 		if *cert != "" && *key != "" && *ca != "" && *nsdAddr != "" {
 			// Build from arguments
-			nsdCollector, err = NewNSDCollector(*nsdType, *nsdAddr, *ca, *key, *cert, false)
+			nsdCollector, err = NewNSDCollector(*nsdType, *nsdAddr, *ca, *key, *cert, *skipVerify)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -250,5 +274,8 @@ func main() {
 	prometheus.MustRegister(nsdCollector)
 	log.Println("Started.")
 	http.Handle(*metricPath, promhttp.Handler())
-	log.Fatal(http.ListenAndServe(*listenAddr, nil))
+
+	log.Infof("Listening for requests on %s:%s", *address, *portNumber)
+	log.Fatalf("Failed to start web server: %s", http.ListenAndServe(fmt.Sprintf("%s:%s", *address, *portNumber), nil))
+
 }
